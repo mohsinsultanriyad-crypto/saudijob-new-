@@ -4,11 +4,20 @@ import mongoose from "mongoose";
 import { z } from "zod";
 import { connectDB } from "./db.js";
 import Job from "./models/Job.js";
-import"dotenv/config";
+import "dotenv/config";
+
+import pushRoutes from "./routes/push.js";
+import PushToken from "./models/PushToken.js";
+import { initFirebaseAdmin } from "./firebaseAdmin.js";
+
+const admin = initFirebaseAdmin();
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "80kb" }));
+
+// ✅ routes after app created
+app.use("/api/push", pushRoutes);
 
 await connectDB();
 
@@ -39,32 +48,19 @@ function isValidId(id) {
 
 function buildFilters({ city, role, q, email }) {
   const filter = {};
-
   if (city) filter.city = city;
   if (role) filter.jobRole = role;
   if (email) filter.email = email;
 
   if (q) {
     const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-    filter.$or = [
-      { jobRole: re },
-      { city: re },
-      { companyName: re }
-    ];
+    filter.$or = [{ jobRole: re }, { city: re }, { companyName: re }];
   }
   return filter;
 }
 
 app.get("/", (req, res) => res.json({ ok: true, message: "SAUDI JOB API running" }));
 
-/**
- * GET /api/jobs
- * Query:
- *  - limit (default 20, max 50)
- *  - skip (default 0)
- *  - city, role, q (search)
- * Returns: { items, total }
- */
 app.get("/api/jobs", async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || "20", 10), 50);
   const skip = Math.max(parseInt(req.query.skip || "0", 10), 0);
@@ -82,23 +78,12 @@ app.get("/api/jobs", async (req, res) => {
 
   const total = await Job.countDocuments(filter);
 
-  // Fetch newest first; we will sort urgent-first in memory for this page chunk
-  const raw = await Job.find(filter)
-    .sort({ createdAt: -1 })
-    .skip(skip)
-    .limit(limit)
-    .lean();
+  const raw = await Job.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
 
-  // Compute urgentActive without saving on GET (no extra DB writes)
   const items = raw
-    .map(j => {
+    .map((j) => {
       const urgentActive = !!(j.isUrgent && j.urgentUntil && new Date(j.urgentUntil).getTime() > now);
-      return {
-        ...j,
-        urgentActive,
-        // if expired urgent, just tell client it's not active
-        isUrgent: urgentActive ? j.isUrgent : false
-      };
+      return { ...j, urgentActive, isUrgent: urgentActive ? j.isUrgent : false };
     })
     .sort((a, b) => {
       if (a.urgentActive && !b.urgentActive) return -1;
@@ -109,7 +94,7 @@ app.get("/api/jobs", async (req, res) => {
   res.json({ items, total });
 });
 
-// Create job
+// ✅ Create job + send push
 app.post("/api/jobs", async (req, res) => {
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -120,7 +105,7 @@ app.post("/api/jobs", async (req, res) => {
   const now = new Date();
   const urgentUntil = data.isUrgent ? new Date(now.getTime() + 24 * 60 * 60 * 1000) : null;
 
-  const job = await Job.create({
+  const savedJob = await Job.create({
     name: data.name,
     companyName: (data.companyName || "").trim() ? data.companyName : data.name,
     phone: data.phone,
@@ -135,19 +120,51 @@ app.post("/api/jobs", async (req, res) => {
     updatedAt: now
   });
 
-  res.status(201).json(job);
+  // ✅ SEND PUSH HERE (role-based)
+  try {
+    const role = String(savedJob.jobRole || "").trim().toLowerCase();
+
+    // IMPORTANT: PushToken schema should store roles in lowercase
+    const tokensDB = await PushToken.find({ roles: role }).lean();
+    const tokens = (tokensDB || []).map((t) => t.token).filter(Boolean);
+
+    if (tokens.length > 0) {
+      const resp = await admin.messaging().sendEachForMulticast({
+        tokens,
+        notification: {
+          title: "New Job: " + savedJob.jobRole,
+          body: savedJob.city + " • Tap to open"
+        },
+        data: {
+          jobId: String(savedJob._id),
+          jobRole: String(savedJob.jobRole),
+          city: String(savedJob.city)
+        }
+      });
+
+      // optional: remove bad tokens automatically
+      const badTokens = [];
+      resp.responses.forEach((r, i) => {
+        if (!r.success) badTokens.push(tokens[i]);
+      });
+      if (badTokens.length) {
+        await PushToken.deleteMany({ token: { $in: badTokens } });
+      }
+    }
+  } catch (e) {
+    console.log("Push send error:", e?.message || e);
+  }
+
+  res.status(201).json(savedJob);
 });
 
-// View counter
 app.post("/api/jobs/:id/view", async (req, res) => {
   const id = req.params.id;
   if (!isValidId(id)) return res.status(400).json({ message: "Invalid id" });
-
   await Job.findByIdAndUpdate(id, { $inc: { views: 1 } });
   res.json({ ok: true });
 });
 
-// Update job (email verify)
 app.put("/api/jobs/:id", async (req, res) => {
   const id = req.params.id;
   if (!isValidId(id)) return res.status(400).json({ message: "Invalid id" });
@@ -177,7 +194,8 @@ app.put("/api/jobs/:id", async (req, res) => {
   }
 
   if (typeof patch.name === "string") job.name = patch.name;
-  if (typeof patch.companyName === "string") job.companyName = patch.companyName.trim() ? patch.companyName : job.companyName;
+  if (typeof patch.companyName === "string")
+    job.companyName = patch.companyName.trim() ? patch.companyName : job.companyName;
   if (typeof patch.phone === "string") job.phone = patch.phone;
   if (typeof patch.city === "string") job.city = patch.city;
   if (typeof patch.jobRole === "string") job.jobRole = patch.jobRole;
@@ -189,7 +207,6 @@ app.put("/api/jobs/:id", async (req, res) => {
   res.json(job);
 });
 
-// Delete job (email verify)
 app.delete("/api/jobs/:id", async (req, res) => {
   const id = req.params.id;
   if (!isValidId(id)) return res.status(400).json({ message: "Invalid id" });
@@ -206,7 +223,6 @@ app.delete("/api/jobs/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
-// My posts (pagination) by email (NOT secure login; simple convenience)
 app.get("/api/my-posts", async (req, res) => {
   const email = String(req.query.email || "").trim().toLowerCase();
   if (!email) return res.status(400).json({ message: "email required" });
@@ -217,12 +233,7 @@ app.get("/api/my-posts", async (req, res) => {
   const filter = buildFilters({ email });
   const total = await Job.countDocuments(filter);
 
-  const items = await Job.find(filter)
-    .sort({ createdAt: -1 })
-    .skip(skip)
-    .limit(limit)
-    .lean();
-
+  const items = await Job.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
   res.json({ items, total });
 });
 
