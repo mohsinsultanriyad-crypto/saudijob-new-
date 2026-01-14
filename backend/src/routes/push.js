@@ -1,42 +1,51 @@
+// backend/src/routes/push.js
 import express from "express";
 import PushToken from "../models/PushToken.js";
 
 const router = express.Router();
 
-// Register or update push token
+// POST /api/push/register
+// body: { token, roles: ["Plumber","Driver"], platform? }
 router.post("/register", async (req, res) => {
   try {
-    const { token, roles, platform, userAgent } = req.body;
+    const token = String(req.body.token || "").trim();
+    const roles = Array.isArray(req.body.roles) ? req.body.roles : [];
+    const platform = String(req.body.platform || "web");
+    const userAgent = String(req.headers["user-agent"] || "");
 
-    if (!token) {
-      return res.status(400).json({ message: "Token required" });
-    }
+    if (!token) return res.status(400).json({ message: "token required" });
 
-    // normalize roles
-    const cleanRoles = Array.isArray(roles)
-      ? roles.map(r => String(r).trim().toLowerCase()).filter(Boolean)
-      : [];
+    const normalizedRoles = roles
+      .map((r) => String(r || "").trim().toLowerCase())
+      .filter(Boolean);
 
-    // upsert token
-    const saved = await PushToken.findOneAndUpdate(
+    // upsert = create if not exist, else update
+    await PushToken.updateOne(
       { token },
       {
-        token,
-        roles: cleanRoles,
-        platform: platform || "web",
-        userAgent: userAgent || "",
-        lastSeen: new Date()
+        $set: {
+          token,
+          roles: [...new Set(normalizedRoles)],
+          platform,
+          userAgent,
+          lastSeen: new Date(),
+        },
       },
-      { upsert: true, new: true }
+      { upsert: true }
     );
 
-    console.log("[PUSH] Token registered:", saved.token);
-    res.json({ ok: true });
-
+    res.json({ ok: true, tokenSaved: true, roles: [...new Set(normalizedRoles)] });
   } catch (e) {
-    console.log("Push register error:", e.message);
-    res.status(500).json({ message: "Server error" });
+    console.log("[PUSH] register error:", e?.message || e);
+    res.status(500).json({ message: "register failed" });
   }
+});
+
+// GET /api/push/debug (just to check how many tokens)
+router.get("/debug", async (req, res) => {
+  const count = await PushToken.countDocuments();
+  const sample = await PushToken.find().limit(5).lean();
+  res.json({ count, sample });
 });
 
 export default router;
