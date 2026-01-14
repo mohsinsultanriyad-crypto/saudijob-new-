@@ -10,23 +10,13 @@ function setLastTime(t) {
   localStorage.setItem(LAST_KEY, String(t));
 }
 
-function normalizeRole(x) {
+function normalize(x) {
   return String(x || "").trim().toLowerCase();
-}
-
-function canNotify() {
-  return "Notification" in window && Notification.permission === "granted";
-}
-
-function notify(job) {
-  if (!canNotify()) return;
-  const title = `New Job: ${job.jobRole} • ${job.city}`;
-  const body = `${job.companyName ? job.companyName + " • " : ""}${job.phone || ""}`;
-  new Notification(title, { body });
 }
 
 export default function useJobAlerts(selectedRoles, setAlertList) {
   const rolesRef = useRef(selectedRoles || []);
+
   useEffect(() => {
     rolesRef.current = selectedRoles || [];
   }, [selectedRoles]);
@@ -35,22 +25,22 @@ export default function useJobAlerts(selectedRoles, setAlertList) {
     if (!setAlertList) return;
 
     const timer = setInterval(async () => {
-      const wanted = (rolesRef.current || []).map(normalizeRole);
+      const wanted = (rolesRef.current || []).map(normalize);
       if (wanted.length === 0) return;
 
       try {
-        const data = await getJobs({ limit: 50, skip: 0, city: "All", role: "All", q: "" });
+        const data = await getJobs({ limit: 50, skip: 0 });
         const items = data?.items || [];
 
         const last = getLastTime();
 
         const matches = items.filter((j) => {
           const t = new Date(j.createdAt).getTime();
-          const role = normalizeRole(j.jobRole);
+          const role = normalize(j.jobRole);
           return t > last && wanted.includes(role);
         });
 
-        if (matches.length === 0) return;
+        if (!matches.length) return;
 
         const maxT = Math.max(...matches.map((j) => new Date(j.createdAt).getTime()));
         setLastTime(maxT);
@@ -61,7 +51,6 @@ export default function useJobAlerts(selectedRoles, setAlertList) {
           const add = [];
 
           for (const job of matches) {
-            if (!job?._id) continue;
             if (existing.has(job._id)) continue;
 
             add.push({
@@ -69,17 +58,13 @@ export default function useJobAlerts(selectedRoles, setAlertList) {
               jobId: job._id,
               jobSnapshot: job,
               seen: false,
-              savedAt: Date.now(),
+              savedAt: Date.now()
             });
-
-            notify(job);
           }
 
           return add.length ? [...add, ...list] : list;
         });
-      } catch {
-        // ignore
-      }
+      } catch {}
     }, 15000);
 
     return () => clearInterval(timer);
