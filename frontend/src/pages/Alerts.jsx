@@ -3,6 +3,7 @@ import JobCard from "../components/JobCard.jsx";
 import DetailsModal from "../components/DetailsModal.jsx";
 import { getJobs } from "../services/api.js";
 import useJobAlerts from "../hooks/useJobAlerts";
+import { enablePushNotifications } from "../push";
 
 export default function Alerts({
   roles,              // ✅ prop roles list (Helper, Plumber, etc.)
