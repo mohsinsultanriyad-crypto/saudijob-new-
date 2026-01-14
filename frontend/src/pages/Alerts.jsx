@@ -2,8 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import JobCard from "../components/JobCard.jsx";
 import DetailsModal from "../components/DetailsModal.jsx";
 import { getJobs } from "../services/api.js";
+import useJobAlerts from "../hooks/useJobAlerts";
 
-export default function Alerts({ roles, alertPref, setAlertPref, alertList, setAlertList }) {
+export default function Alerts({
+  roles,              // ✅ prop roles list (Helper, Plumber, etc.)
+  alertPref,
+  setAlertPref,
+  alertList,
+  setAlertList
+}) {
   const [selectedJob, setSelectedJob] = useState(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -11,9 +18,18 @@ export default function Alerts({ roles, alertPref, setAlertPref, alertList, setA
   const selectedRoles = alertPref?.roles || [];
   const alerts = useMemo(() => alertList || [], [alertList]);
 
+  // ✅ Start alerts engine (polling + store + browser notification)
+  useJobAlerts(selectedRoles, setAlertList);
+
+  // ✅ persist selected roles (so refresh ke baad bhi on rahe)
+  useEffect(() => {
+    localStorage.setItem("sj_roles", JSON.stringify(selectedRoles));
+  }, [selectedRoles]);
+
   function toggleRole(role) {
+    const norm = String(role).trim(); // keep same display value
     const cur = selectedRoles;
-    const next = cur.includes(role) ? cur.filter((x) => x !== role) : [...cur, role];
+    const next = cur.includes(norm) ? cur.filter((x) => x !== norm) : [...cur, norm];
     setAlertPref({ roles: next });
   }
 
@@ -30,14 +46,12 @@ export default function Alerts({ roles, alertPref, setAlertPref, alertList, setA
   }
 
   function openJob(job) {
-    // ✅ job open -> mark that alert read
     if (job?._id) markAlertSeen(job._id);
-
     setSelectedJob(job);
     setDetailsOpen(true);
   }
 
-  // ✅ Auto-clean: remove deleted/expired jobs from alerts by checking server list
+  // ✅ Auto-clean: remove deleted/expired jobs from alerts
   useEffect(() => {
     let cancelled = false;
 
@@ -46,22 +60,16 @@ export default function Alerts({ roles, alertPref, setAlertPref, alertList, setA
         setSyncing(true);
         const data = await getJobs({ limit: 300, skip: 0, city: "All", role: "All", q: "" });
         const aliveIds = new Set((data?.items || []).map((j) => j?._id).filter(Boolean));
-
         if (cancelled) return;
-
-        // keep same objects (including seen flag), just remove dead ones
         setAlertList((prev) => (prev || []).filter((a) => aliveIds.has(a.jobId)));
       } catch {
-        // offline ignore
+        // ignore
       } finally {
         if (!cancelled) setSyncing(false);
       }
     }
 
-    // run once when Alerts page opens
     syncClean();
-
-    // also run every 90 sec while Alerts page is open (safe)
     const t = setInterval(syncClean, 90000);
 
     return () => {
@@ -94,7 +102,7 @@ export default function Alerts({ roles, alertPref, setAlertPref, alertList, setA
         </div>
 
         <div className="mt-3 flex flex-wrap gap-2">
-          {roles.map((r) => {
+          {(roles || []).map((r) => {
             const active = selectedRoles.includes(r);
             return (
               <button
