@@ -3,29 +3,39 @@ import PushToken from "../models/PushToken.js";
 
 const router = express.Router();
 
-function normalizeRole(r) {
-  return String(r || "").trim().toLowerCase();
-}
-
-// Register browser/device token
+// Register or update push token
 router.post("/register", async (req, res) => {
   try {
-    const { token, roles } = req.body || {};
-    if (!token) return res.status(400).json({ ok: false });
+    const { token, roles, platform, userAgent } = req.body;
 
-    const cleanRoles = [...new Set((roles || []).map(normalizeRole).filter(Boolean))];
+    if (!token) {
+      return res.status(400).json({ message: "Token required" });
+    }
 
-    await PushToken.updateOne(
+    // normalize roles
+    const cleanRoles = Array.isArray(roles)
+      ? roles.map(r => String(r).trim().toLowerCase()).filter(Boolean)
+      : [];
+
+    // upsert token
+    const saved = await PushToken.findOneAndUpdate(
       { token },
-      { $set: { token, roles: cleanRoles, lastSeen: new Date() } },
-      { upsert: true }
+      {
+        token,
+        roles: cleanRoles,
+        platform: platform || "web",
+        userAgent: userAgent || "",
+        lastSeen: new Date()
+      },
+      { upsert: true, new: true }
     );
 
-    console.log("[PUSH] Token registered:", token.slice(0, 15), "roles:", cleanRoles);
+    console.log("[PUSH] Token registered:", saved.token);
     res.json({ ok: true });
+
   } catch (e) {
-    console.log("[PUSH] Register error:", e.message);
-    res.status(500).json({ ok: false });
+    console.log("Push register error:", e.message);
+    res.status(500).json({ message: "Server error" });
   }
 });
 
