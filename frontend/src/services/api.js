@@ -1,9 +1,11 @@
 import axios from "axios";
 
 export const API_BASE =
-  import.meta.env.VITE_API_BASE || "http://localhost:3000";
+  import.meta.env.VITE_API_BASE || "https://saudijob-new.onrender.com";
 
 export const api = axios.create({ baseURL: API_BASE });
+
+// --------------------------
 
 export async function getJobs({ limit = 20, skip = 0, city = "All", role = "All", q = "" } = {}) {
   const params = { limit, skip };
@@ -17,14 +19,14 @@ export async function getMyPosts({ email, limit = 20, skip = 0 }) {
   return (await api.get("/api/my-posts", { params: { email, limit, skip } })).data;
 }
 
-// ✅ CREATE JOB (email normalize)
+// CREATE JOB
 export const createJob = async (payload) =>
   (await api.post("/api/jobs", {
     ...payload,
-    email: (payload.email || "").trim().toLowerCase(),
+    email: (payload.email || "").trim().toLowerCase()
   })).data;
 
-// ✅ MUST EXIST (your app imports this)
+// ADD VIEW
 export const addView = async (id) =>
   (await api.post(`/api/jobs/${id}/view`)).data;
 
